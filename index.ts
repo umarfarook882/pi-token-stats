@@ -376,13 +376,16 @@ export default function (pi: ExtensionAPI) {
     const e   = pending.estimated;
     const tot = totalEst(e);
     const t   = ctx.ui.theme;
-    
+    const cumCacheStr = (cum.cacheR > 0 || cum.cacheW > 0)
+      ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cum.cacheR)} ∑cw:${fmt(cum.cacheW)}`)
+      : "";
+
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
       [
         t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`),
-        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", "∑↓…")
+        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr
       ],
       { placement: "belowEditor" }
     );
@@ -450,6 +453,13 @@ export default function (pi: ExtensionAPI) {
         t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr
       ],
       { placement: "belowEditor" }
+    );
+  });
+
+  pi.on("session_compact", (_event, ctx) => {
+    ctx.ui.notify(
+      "Context compacted — per-turn token counts will drop; cumulative totals reflect actual spend.",
+      "info"
     );
   });
 

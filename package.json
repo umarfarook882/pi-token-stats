@@ -4,7 +4,7 @@
   "description": "Live per-turn token breakdown by category in footer + drill-down overlay",
   "license": "MIT",
   "dependencies": {
-    "gpt-tokenizer": "^2.9.0"
+    "gpt-tokenizer": "^3.4.0"
   },
   "pi": {
     "extensions": [
