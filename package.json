@@ -1,0 +1,14 @@
+{
+  "name": "pi-token-stats",
+  "version": "0.1.0",
+  "description": "Live per-turn token breakdown by category in footer + drill-down overlay",
+  "license": "MIT",
+  "dependencies": {
+    "gpt-tokenizer": "^2.9.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
