@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
-import { encode } from "gpt-tokenizer/model/gpt-4o";
+import { estimateTokens } from "@earendil-works/pi-agent-core/dist/harness/compaction/compaction";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -50,8 +50,7 @@ interface TurnRecord {
 // ─── Token helpers ──────────────────────────────────────────────────────────────
 
 function tok(text: string): number {
-  try { return encode(text).length; }
-  catch { return Math.ceil(text.length / 4); }
+  return estimateTokens({ role: "user", content: text, timestamp: Date.now() });
 }
 
 function extractText(content: unknown): string {
@@ -199,6 +198,17 @@ function makeOverlay(
         out.push("");
 
         // ── Actual vs estimated ────────────────────────────────
+        const activeModel = pi.getModel?.();
+        const ctxWindow = activeModel?.contextWindow;
+        
+        let ctxInfo = "";
+        if (ctxWindow) {
+          const usedTokens = rec.actual?.in != null ? (rec.actual.in + (rec.actual.cacheR ?? 0) + (rec.actual.cacheW ?? 0)) : tot;
+          const pct = Math.min(100, (usedTokens / ctxWindow) * 100).toFixed(1);
+          const pctColor = Number(pct) > 90 ? "error" : Number(pct) > 75 ? "warning" : "muted";
+          ctxInfo = `  ${theme.fg("muted", "Context")}   ${theme.fg(pctColor, `${pct}%`)} of ${fmt(ctxWindow)}`;
+        }
+
         if (rec.actual) {
           const ai = rec.actual.in;
           const ao = rec.actual.out;
@@ -210,7 +220,9 @@ function makeOverlay(
         } else {
           out.push(`  ${theme.fg("muted", "Actual")}    (not captured — provider may not expose per-call usage)`);
         }
-        out.push(`  ${theme.fg("muted", "Estimated")} ↑ ~${fmt(tot)} total (o200k_base)`);
+        
+        const estLine = `  ${theme.fg("muted", "Estimated")} ↑ ~${fmt(tot)} total`;
+        out.push(ctxInfo ? `${estLine.padEnd(50)}${ctxInfo}` : estLine);
         out.push("");
 
         // ── Stacked bar ────────────────────────────────────────
@@ -300,6 +312,25 @@ function makeOverlay(
         } else if (matchesKey(data, "escape")) {
           done(undefined);
           return;
+        } else if (data === "e" || data === "E") {
+          done(undefined);
+          setTimeout(() => {
+            import("fs/promises").then(async (fs) => {
+              const path = await import("path");
+              const filename = `pi-token-stats-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+              const exportPath = path.join(process.cwd(), filename);
+              
+              const exportData = {
+                exportedAt: new Date().toISOString(),
+                turns: history
+              };
+              
+              try {
+                await fs.writeFile(exportPath, JSON.stringify(exportData, null, 2), "utf8");
+              } catch (err) {}
+            });
+          }, 10);
+          return;
         }
       } else {
         if (matchesKey(data, "up")) {
@@ -315,6 +346,28 @@ function makeOverlay(
         } else if (matchesKey(data, "escape")) {
           inDrill = false;
           scrollY = 0;
+        } else if (data === "e" || data === "E") {
+          done(undefined); // Close overlay first
+          
+          // Execute export via the background
+          setTimeout(() => {
+            import("fs/promises").then(async (fs) => {
+              const path = await import("path");
+              const filename = `pi-token-stats-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+              const exportPath = path.join(process.cwd(), filename);
+              
+              const exportData = {
+                exportedAt: new Date().toISOString(),
+                turns: history
+              };
+              
+              try {
+                await fs.writeFile(exportPath, JSON.stringify(exportData, null, 2), "utf8");
+                console.log(`\n\x1b[32m✓ Exported token stats to ${filename}\x1b[0m\n`);
+              } catch (err) {}
+            });
+          }, 10);
+          return;
         }
       }
       tui.requestRender();
@@ -388,6 +441,15 @@ export default function (pi: ExtensionAPI) {
     const e   = pending.estimated;
     const tot = totalEst(e);
     const t   = ctx.ui.theme;
+    
+    let ctxPctStr = "";
+    const ctxUsage = ctx.getContextUsage();
+    if (ctxUsage?.percent != null) {
+      const p = ctxUsage.percent;
+      const pColor = p > 90 ? "error" : p > 75 ? "warning" : "muted";
+      ctxPctStr = t.fg("muted", " | ctx:") + t.fg(pColor, `${p.toFixed(0)}%`);
+    }
+    
     const cumCacheStr = (cum.cacheR > 0 || cum.cacheW > 0)
       ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cum.cacheR)} ∑cw:${fmt(cum.cacheW)}`)
       : "";
@@ -397,7 +459,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`),
+        t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + ctxPctStr,
         t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
@@ -409,13 +471,52 @@ export default function (pi: ExtensionAPI) {
     const se = (event as any).assistantMessageEvent;
     if (!se) return;
     
+    let tuiUpdateNeeded = false;
     const usage = se.type === "done" ? se.message?.usage : se.partial?.usage;
     if (usage) {
-      if (usage.input !== undefined) inputTok = Math.max(inputTok, usage.input);
-      if (usage.output !== undefined) outputTok = Math.max(outputTok, usage.output);
+      if (usage.input !== undefined) {
+        if (inputTok !== usage.input) tuiUpdateNeeded = true;
+        inputTok = Math.max(inputTok, usage.input);
+      }
+      if (usage.output !== undefined) {
+        if (outputTok !== usage.output) tuiUpdateNeeded = true;
+        outputTok = Math.max(outputTok, usage.output);
+      }
       if (usage.cacheRead !== undefined) cacheR = Math.max(cacheR, usage.cacheRead);
       if (usage.cacheWrite !== undefined) cacheW = Math.max(cacheW, usage.cacheWrite);
       if (usage.cost?.total !== undefined) turnCost = usage.cost.total;
+      
+      // Update UI if we are receiving live tokens
+      if (tuiUpdateNeeded && _ctx.hasUI && pending?.estimated) {
+        const e   = pending.estimated;
+        const tot = totalEst(e);
+        const t   = _ctx.ui.theme;
+        
+        const currentIn = inputTok >= 0 ? inputTok : tot;
+        const currentOut = outputTok >= 0 ? outputTok : 0;
+        
+        let ctxPctStr = "";
+        const ctxUsage = _ctx.getContextUsage();
+        if (ctxUsage?.percent != null) {
+          const p = ctxUsage.percent;
+          const pColor = p > 90 ? "error" : p > 75 ? "warning" : "muted";
+          ctxPctStr = t.fg("muted", " | ctx:") + t.fg(pColor, `${p.toFixed(0)}%`);
+        }
+        
+        const cumCacheStr = (cum.cacheR > 0 || cum.cacheW > 0)
+          ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cum.cacheR)} ∑cw:${fmt(cum.cacheW)}`)
+          : "";
+        const cumCostStr = cum.cost > 0 ? t.fg("muted", " | ") + t.fg("success", `∑${fmtCost(cum.cost)}`) : "";
+
+        _ctx.ui.setWidget(
+          "token-stats",
+          [
+            t.fg("muted", "Turn ") + t.fg("accent", `↑${fmt(currentIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)} | `) + t.fg("accent", `↓${fmt(currentOut)}`) + ctxPctStr,
+            t.fg("muted", "Cum. ") + t.fg("accent", `∑↑${fmt(cum.totalIn + currentIn)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut + currentOut) : fmt(currentOut)}`) + cumCacheStr + cumCostStr
+          ],
+          { placement: "belowEditor" }
+        );
+      }
     }
   });
 
@@ -468,6 +569,15 @@ export default function (pi: ExtensionAPI) {
     const est = ai == null ? "~" : "";
     const displayIn = ai != null ? actualInTotal : tot;
     
+    // Add context window percentage to footer if available
+    let ctxPctStr = "";
+    const ctxUsage = ctx.getContextUsage();
+    if (ctxUsage?.percent != null) {
+      const p = ctxUsage.percent;
+      const pColor = p > 90 ? "error" : p > 75 ? "warning" : "muted";
+      ctxPctStr = t.fg("muted", " | ctx:") + t.fg(pColor, `${p.toFixed(0)}%`);
+    }
+    
     const turnCacheStr = (cr > 0 || cw > 0) ? t.fg("muted", " | ") + t.fg("accent", `cr:${fmt(cr)} cw:${fmt(cw)}`) : "";
     const cumCacheStr  = (cumCR > 0 || cumCW > 0) ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cumCR)} ∑cw:${fmt(cumCW)}`) : "";
     
@@ -478,7 +588,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr,
+        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr + ctxPctStr,
         t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
