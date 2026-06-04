@@ -39,7 +39,7 @@ interface TurnRecord {
   turnIndex: number;
   timestamp: number;
   estimated: CategoryStats;
-  actual: { in: number | null; out: number | null; cacheR: number; cacheW: number } | null;
+  actual: { in: number | null; out: number | null; cacheR: number; cacheW: number; cost: number } | null;
   content: {
     systemPrompt: string;
     toolsJson: string;
@@ -108,6 +108,12 @@ function extractMessageText(msg: any): string {
 
 function fmt(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+}
+
+function fmtCost(c: number): string {
+  if (c === 0) return "$0.00";
+  if (c < 0.01) return `¢${(c * 100).toFixed(2)}`;
+  return `$${c.toFixed(3)}`;
 }
 
 function totalEst(e: CategoryStats): number {
@@ -196,10 +202,11 @@ function makeOverlay(
         if (rec.actual) {
           const ai = rec.actual.in;
           const ao = rec.actual.out;
-          const { cacheR, cacheW } = rec.actual;
+          const { cacheR, cacheW, cost } = rec.actual;
           const inStr = ai != null ? fmt(ai + cacheR + cacheW) : `~${fmt(tot)}`;
           const outStr = ao != null ? fmt(ao) : "??";
-          out.push(`  ${theme.fg("mdLink", "Actual")}    ↑ ${inStr}  ↓ ${outStr}  cache_r ${fmt(cacheR)}  cache_w ${fmt(cacheW)}`);
+          const costStr = cost > 0 ? `  cost ${theme.fg("success", fmtCost(cost))}` : "";
+          out.push(`  ${theme.fg("mdLink", "Actual")}    ↑ ${inStr}  ↓ ${outStr}  cache_r ${fmt(cacheR)}  cache_w ${fmt(cacheW)}${costStr}`);
         } else {
           out.push(`  ${theme.fg("muted", "Actual")}    (not captured — provider may not expose per-call usage)`);
         }
@@ -320,14 +327,15 @@ function makeOverlay(
 export default function (pi: ExtensionAPI) {
   const turns: TurnRecord[]      = [];
   let pending: Partial<TurnRecord> | null = null;
-  let inputTok = -1, outputTok = -1, cacheR = -1, cacheW = -1;
-  let cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0 };
+  let inputTok = -1, outputTok = -1, cacheR = -1, cacheW = -1, turnCost = 0;
+  let cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
 
   // ── Turn lifecycle ────────────────────────────────────────────────────────────
 
   pi.on("turn_start", (event, _ctx) => {
     pending = { turnIndex: event.turnIndex, timestamp: Date.now(), actual: null };
     inputTok = outputTok = cacheR = cacheW = -1;
+    turnCost = 0;
   });
 
   pi.on("context", (event, ctx) => {
@@ -383,13 +391,14 @@ export default function (pi: ExtensionAPI) {
     const cumCacheStr = (cum.cacheR > 0 || cum.cacheW > 0)
       ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cum.cacheR)} ∑cw:${fmt(cum.cacheW)}`)
       : "";
+    const cumCostStr = cum.cost > 0 ? t.fg("muted", " | ") + t.fg("success", `∑${fmtCost(cum.cost)}`) : "";
 
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
       [
         t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`),
-        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr
+        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
     );
@@ -406,13 +415,14 @@ export default function (pi: ExtensionAPI) {
       if (usage.output !== undefined) outputTok = Math.max(outputTok, usage.output);
       if (usage.cacheRead !== undefined) cacheR = Math.max(cacheR, usage.cacheRead);
       if (usage.cacheWrite !== undefined) cacheW = Math.max(cacheW, usage.cacheWrite);
+      if (usage.cost?.total !== undefined) turnCost = usage.cost.total;
     }
   });
 
   pi.on("turn_end", (_event, ctx) => {
     if (!pending?.estimated) { pending = null; return; }
 
-    const hasActual = inputTok >= 0 || outputTok >= 0 || cacheR > 0 || cacheW > 0;
+    const hasActual = inputTok >= 0 || outputTok >= 0 || cacheR > 0 || cacheW > 0 || turnCost > 0;
     const record: TurnRecord = {
       turnIndex: pending.turnIndex!,
       timestamp: pending.timestamp!,
@@ -421,7 +431,8 @@ export default function (pi: ExtensionAPI) {
                    in: inputTok >= 0 ? inputTok : null, 
                    out: outputTok >= 0 ? outputTok : null, 
                    cacheR: Math.max(0, cacheR), 
-                   cacheW: Math.max(0, cacheW) 
+                   cacheW: Math.max(0, cacheW),
+                   cost: turnCost
                  } : null,
       content:   pending.content ?? { systemPrompt: "", toolsJson: "", messages: [] },
     };
@@ -448,8 +459,10 @@ export default function (pi: ExtensionAPI) {
     if (ao != null) cum.totalOut += ao;
     cum.cacheR += cr;
     cum.cacheW += cw;
+    cum.cost += turnCost;
     const cumCR = cum.cacheR;
     const cumCW = cum.cacheW;
+    const cumCost = cum.cost;
 
     const t = ctx.ui.theme;
     const est = ai == null ? "~" : "";
@@ -457,13 +470,16 @@ export default function (pi: ExtensionAPI) {
     
     const turnCacheStr = (cr > 0 || cw > 0) ? t.fg("muted", " | ") + t.fg("accent", `cr:${fmt(cr)} cw:${fmt(cw)}`) : "";
     const cumCacheStr  = (cumCR > 0 || cumCW > 0) ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cumCR)} ∑cw:${fmt(cumCW)}`) : "";
+    
+    const turnCostStr  = turnCost > 0 ? t.fg("muted", " | ") + t.fg("success", fmtCost(turnCost)) : "";
+    const cumCostStr   = cumCost > 0 ? t.fg("muted", " | ") + t.fg("success", `∑${fmtCost(cumCost)}`) : "";
 
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr,
-        t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr
+        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr,
+        t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
     );
@@ -478,7 +494,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     turns.length = 0;
-    cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0 };
+    cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
