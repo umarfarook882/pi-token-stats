@@ -261,7 +261,7 @@ function makeOverlay(
         }
 
         out.push("");
-        out.push(theme.fg("muted", "  ↑↓: select category   Enter: view content   ← →: switch turn   Esc: close"));
+        out.push(theme.fg("muted", "  ↑↓: select category   Enter: view content   ← →: switch turn   e: export   Esc: close"));
       } else {
         // ── Drill-down ─────────────────────────────────────────
         const cat = CATS.find(c => c.key === selKey)!;
@@ -269,7 +269,7 @@ function makeOverlay(
         out.push(
           theme.bold(` ▶ ${cat.label}`) +
           theme.fg("muted", `  ${fmt(catTok)} tok`) +
-          theme.fg("muted", "   ↑↓: scroll   Esc: back")
+          theme.fg("muted", "   ↑↓: scroll   e: export   Esc: back")
         );
         out.push("");
 
@@ -322,15 +322,13 @@ function makeOverlay(
               const path = await import("path");
               const filename = `pi-token-stats-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
               const exportPath = path.join(process.cwd(), filename);
-              
-              const exportData = {
-                exportedAt: new Date().toISOString(),
-                turns: history
-              };
-              
+              const exportData = { exportedAt: new Date().toISOString(), turns: history };
               try {
                 await fs.writeFile(exportPath, JSON.stringify(exportData, null, 2), "utf8");
-              } catch (err) {}
+                console.log(`\n\x1b[32m✓ Exported token stats to ${filename}\x1b[0m\n`);
+              } catch (err) {
+                console.error(`\n\x1b[31m✗ Export failed: ${err}\x1b[0m\n`);
+              }
             });
           }, 10);
           return;
