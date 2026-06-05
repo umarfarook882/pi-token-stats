@@ -221,8 +221,11 @@ function makeOverlay(
           out.push(`  ${theme.fg("muted", "Actual")}    (not captured — provider may not expose per-call usage)`);
         }
         
+        const estLineRaw = `  Estimated ↑ ~${fmt(tot)} total`;
         const estLine = `  ${theme.fg("muted", "Estimated")} ↑ ~${fmt(tot)} total`;
-        out.push(ctxInfo ? `${estLine.padEnd(50)}${ctxInfo}` : estLine);
+        // padEnd on the raw (no ANSI) length so visible alignment is correct
+        const pad = Math.max(0, 50 - estLineRaw.length);
+        out.push(ctxInfo ? `${estLine}${" ".repeat(pad)}${ctxInfo}` : estLine);
         out.push("");
 
         // ── Stacked bar ────────────────────────────────────────
@@ -381,7 +384,7 @@ export default function (pi: ExtensionAPI) {
   const turns: TurnRecord[]      = [];
   let pending: Partial<TurnRecord> | null = null;
   let inputTok = -1, outputTok = -1, cacheR = -1, cacheW = -1, turnCost = 0;
-  let cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
+  let cum = { base: 0, skills: 0, metadata: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
 
   // ── Turn lifecycle ────────────────────────────────────────────────────────────
 
@@ -459,8 +462,8 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + ctxPctStr,
-        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr + cumCostStr
+        t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + ctxPctStr,
+        t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} md:${fmt(cum.metadata + e.metadata)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
     );
@@ -511,8 +514,8 @@ export default function (pi: ExtensionAPI) {
         _ctx.ui.setWidget(
           "token-stats",
           [
-            t.fg("muted", "Turn ") + t.fg("accent", `↑${fmt(currentIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)} | `) + t.fg("accent", `↓${fmt(currentOut)}`) + ctxPctStr,
-            t.fg("muted", "Cum. ") + t.fg("accent", `∑↑${fmt(cum.totalIn + currentIn)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut + currentOut) : fmt(currentOut)}`) + cumCacheStr + cumCostStr
+            t.fg("muted", "Turn ") + t.fg("accent", `↑${fmt(currentIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)} | `) + t.fg("accent", `↓${fmt(currentOut)}`) + ctxPctStr,
+            t.fg("muted", "Cum. ") + t.fg("accent", `∑↑${fmt(cum.totalIn + currentIn)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} md:${fmt(cum.metadata + e.metadata)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut + currentOut) : fmt(currentOut)}`) + cumCacheStr + cumCostStr
           ],
           { placement: "belowEditor" }
         );
@@ -552,6 +555,7 @@ export default function (pi: ExtensionAPI) {
 
     cum.base += e.base;
     cum.skills += e.skills;
+    cum.metadata += e.metadata;
     cum.tools += e.tools;
     cum.history += e.history;
     cum.results += e.results;
@@ -588,8 +592,8 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr + ctxPctStr,
-        t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr + cumCostStr
+        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr + ctxPctStr,
+        t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} md:${fmt(cum.metadata)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
     );
@@ -604,7 +608,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     turns.length = 0;
-    cum = { base: 0, skills: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
+    cum = { base: 0, skills: 0, metadata: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
