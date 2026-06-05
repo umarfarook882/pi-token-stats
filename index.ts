@@ -389,7 +389,7 @@ export default function (pi: ExtensionAPI) {
   // ── Turn lifecycle ────────────────────────────────────────────────────────────
 
   pi.on("turn_start", (event, _ctx) => {
-    pending = { turnIndex: event.turnIndex, timestamp: Date.now(), actual: null };
+    pending = { turnIndex: event.turnIndex, timestamp: Date.now(), actual: null, _savedInputText: null as string | null };
     inputTok = outputTok = cacheR = cacheW = -1;
     turnCost = 0;
   });
@@ -413,7 +413,7 @@ export default function (pi: ExtensionAPI) {
     for (let i = 0; i < msgs.length; i++) {
       const msg  = msgs[i];
       if (msg.excludeFromContext) continue;
-      
+
       const text = extractMessageText(msg);
       const t    = tok(text);
 
@@ -426,6 +426,22 @@ export default function (pi: ExtensionAPI) {
       } else {
         histTok += t;
         snapshots.push({ role: msg.role, text, category: "history" });
+      }
+    }
+
+    // On the first context fire the last message is the user's input — save it.
+    // On subsequent fires (tool-call loops) the user's message has shifted into
+    // history and the last message is a toolResult, making inTok = 0. Restore the
+    // original input by text-matching it back out of the history snapshots.
+    if ((pending as any)._savedInputText == null) {
+      (pending as any)._savedInputText = snapshots.find(s => s.category === "input")?.text ?? null;
+    } else {
+      const savedText = (pending as any)._savedInputText as string;
+      const dupIdx = snapshots.findIndex(s => s.category === "history" && s.text === savedText);
+      if (dupIdx >= 0) {
+        histTok -= tok(savedText);
+        snapshots[dupIdx].category = "input";
+        inTok = tok(savedText);
       }
     }
 
