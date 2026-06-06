@@ -47,6 +47,14 @@ interface TurnRecord {
   };
 }
 
+interface CumStats extends CategoryStats {
+  totalIn: number;
+  totalOut: number;
+  cacheR: number;
+  cacheW: number;
+  cost: number;
+}
+
 // ─── Token helpers ──────────────────────────────────────────────────────────────
 
 function tok(text: string): number {
@@ -115,6 +123,11 @@ function fmtCost(c: number): string {
   return `$${c.toFixed(3)}`;
 }
 
+function fmtCacheHit(cacheR: number, totalIn: number): string {
+  if (cacheR <= 0 || totalIn <= 0) return "";
+  return `${Math.round((cacheR / totalIn) * 100)}%`;
+}
+
 function totalEst(e: CategoryStats): number {
   return e.base + e.skills + e.metadata + e.tools + e.history + e.results + e.input;
 }
@@ -134,14 +147,16 @@ const CATS: Array<{ key: keyof CategoryStats; label: string; color: string }> = 
 
 function makeOverlay(
   history: TurnRecord[],
+  cumData: CumStats,
   pi: ExtensionAPI,
   tui: any,
   theme: any,
   done: (v: void) => void,
 ) {
-  let turnIdx  = history.length - 1;
-  let inDrill  = false;
-  let scrollY  = 0;
+  let turnIdx   = history.length - 1;
+  let inDrill   = false;
+  let inSummary = false;
+  let scrollY   = 0;
   let drillLines: string[] = [];
 
   // Sort categories by token count for the current turn
@@ -190,6 +205,43 @@ function makeOverlay(
       const tot  = totalEst(e);
       const out: string[] = [];
 
+      // ── Session summary view ───────────────────────────────
+      if (inSummary) {
+        out.push(theme.bold(" Session Summary ") + theme.fg("muted", `  ${history.length} turn${history.length !== 1 ? "s" : ""}`));
+        out.push("");
+        const hitRate = cumData.totalIn > 0 ? Math.round((cumData.cacheR / cumData.totalIn) * 100) : 0;
+        out.push(`  ${theme.fg("muted", "∑ Input")}   ${theme.fg("accent", fmt(cumData.totalIn))} tok    ${theme.fg("muted", "∑ Output")}  ${theme.fg("accent", fmt(cumData.totalOut))} tok    ${theme.fg("muted", "∑ Cost")}  ${theme.fg("success", fmtCost(cumData.cost))}`);
+        if (cumData.cacheR > 0) out.push(`  ${theme.fg("accent", `${hitRate}%`)} ${theme.fg("muted", "cache hit  (0.1× cost on those tokens)")}`);
+        out.push("");
+        out.push(theme.fg("muted", "  Category breakdown (cumulative)"));
+        out.push("  " + "─".repeat(Math.min(width - 6, 48)));
+        const cumCats = [...CATS].map(c => ({ ...c, n: cumData[c.key] })).sort((a, b) => b.n - a.n);
+        const cumTotal = cumCats.reduce((s, c) => s + c.n, 0);
+        for (const { label, color, n } of cumCats) {
+          const pct = cumTotal > 0 ? ((n / cumTotal) * 100).toFixed(1) : "0.0";
+          out.push(`  ${theme.fg(color, label.padEnd(24))} ${fmt(n).padStart(8)} tok  ${pct.padStart(5)}%`);
+        }
+        out.push("");
+        const hasCosts = history.some(r => (r.actual?.cost ?? 0) > 0);
+        if (hasCosts) {
+          out.push(theme.fg("muted", "  Per-turn cost"));
+          out.push("  " + "─".repeat(Math.min(width - 6, 48)));
+          const PER_ROW = 4;
+          for (let i = 0; i < history.length; i += PER_ROW) {
+            out.push("  " + history.slice(i, i + PER_ROW).map(r =>
+              `t${r.turnIndex + 1}:${fmtCost(r.actual?.cost ?? 0)}`.padEnd(14)
+            ).join(""));
+          }
+          const topTurn = [...history].sort((a, b) => (b.actual?.cost ?? 0) - (a.actual?.cost ?? 0))[0];
+          const avgCost = cumData.cost / history.length;
+          out.push("");
+          out.push(`  ${theme.fg("muted", "Highest")}   t${topTurn.turnIndex + 1}: ${theme.fg("warning", fmtCost(topTurn.actual?.cost ?? 0))}    ${theme.fg("muted", "Average")}   ${theme.fg("accent", fmtCost(avgCost))}/turn`);
+        }
+        out.push("");
+        out.push(theme.fg("muted", "  s: turn view   e: export   Esc: close"));
+        return out;
+      }
+
       if (!inDrill) {
         // ── Header ────────────────────────────────────────────
         const title   = theme.bold(" Token Stats ");
@@ -213,10 +265,13 @@ function makeOverlay(
           const ai = rec.actual.in;
           const ao = rec.actual.out;
           const { cacheR, cacheW, cost } = rec.actual;
-          const inStr = ai != null ? fmt(ai + cacheR + cacheW) : `~${fmt(tot)}`;
+          const totalIn = ai != null ? ai + cacheR + cacheW : 0;
+          const inStr = ai != null ? fmt(totalIn) : `~${fmt(tot)}`;
           const outStr = ao != null ? fmt(ao) : "??";
           const costStr = cost > 0 ? `  cost ${theme.fg("success", fmtCost(cost))}` : "";
-          out.push(`  ${theme.fg("mdLink", "Actual")}    ↑ ${inStr}  ↓ ${outStr}  cache_r ${fmt(cacheR)}  cache_w ${fmt(cacheW)}${costStr}`);
+          const hitPct = fmtCacheHit(cacheR, totalIn);
+          const hitInfo = hitPct ? `  ${theme.fg("muted", "hit")} ${theme.fg("accent", hitPct)}` : "";
+          out.push(`  ${theme.fg("mdLink", "Actual")}    ↑ ${inStr}  ↓ ${outStr}  cache_r ${fmt(cacheR)}  cache_w ${fmt(cacheW)}${hitInfo}${costStr}`);
         } else {
           out.push(`  ${theme.fg("muted", "Actual")}    (not captured — provider may not expose per-call usage)`);
         }
@@ -261,7 +316,7 @@ function makeOverlay(
         }
 
         out.push("");
-        out.push(theme.fg("muted", "  ↑↓: select category   Enter: view content   ← →: switch turn   e: export   Esc: close"));
+        out.push(theme.fg("muted", "  ↑↓: select   Enter: drill   ←→: turn   s: summary   e: export   Esc: close"));
       } else {
         // ── Drill-down ─────────────────────────────────────────
         const cat = CATS.find(c => c.key === selKey)!;
@@ -295,6 +350,29 @@ function makeOverlay(
     invalidate() {},
 
     handleInput(data: string) {
+      if (inSummary) {
+        if (matchesKey(data, "escape")) { done(undefined); return; }
+        if (data === "s" || data === "S") { inSummary = false; tui.requestRender(); return; }
+        if (data === "e" || data === "E") {
+          done(undefined);
+          setTimeout(() => {
+            import("fs/promises").then(async (fs) => {
+              const path = await import("path");
+              const filename = `pi-token-stats-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+              const exportPath = path.join(process.cwd(), filename);
+              const exportData = { exportedAt: new Date().toISOString(), turns: history };
+              try {
+                await fs.writeFile(exportPath, JSON.stringify(exportData, null, 2), "utf8");
+                console.log(`\n\x1b[32m✓ Exported token stats to ${filename}\x1b[0m\n`);
+              } catch (err) {
+                console.error(`\n\x1b[31m✗ Export failed: ${err}\x1b[0m\n`);
+              }
+            });
+          }, 10);
+          return;
+        }
+        return;
+      }
       if (!inDrill) {
         const sorted = sortedCats(history[turnIdx].estimated);
         let idx = sorted.findIndex(c => c.key === selKey);
@@ -312,6 +390,8 @@ function makeOverlay(
           drillLines = buildDrillLines(history[turnIdx]);
           inDrill    = true;
           scrollY    = 0;
+        } else if (data === "s" || data === "S") {
+          inSummary = true;
         } else if (matchesKey(data, "escape")) {
           done(undefined);
           return;
@@ -382,7 +462,8 @@ export default function (pi: ExtensionAPI) {
   const turns: TurnRecord[]      = [];
   let pending: Partial<TurnRecord> | null = null;
   let inputTok = -1, outputTok = -1, cacheR = -1, cacheW = -1, turnCost = 0;
-  let cum = { base: 0, skills: 0, metadata: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
+  let cum: CumStats = { base: 0, skills: 0, metadata: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
+  let lastCtxWarning = 0;
 
   // ── Turn lifecycle ────────────────────────────────────────────────────────────
 
@@ -476,7 +557,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + ctxPctStr,
+        t.fg("muted", "t") + t.fg("accent", `${(pending as any).turnIndex + 1} ~↑${fmt(tot)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + ctxPctStr,
         t.fg("muted", "Cum. ") + t.fg("accent", `~∑↑${fmt(cum.totalIn + tot)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} md:${fmt(cum.metadata + e.metadata)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut) : ""}…`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
@@ -528,7 +609,7 @@ export default function (pi: ExtensionAPI) {
         _ctx.ui.setWidget(
           "token-stats",
           [
-            t.fg("muted", "Turn ") + t.fg("accent", `↑${fmt(currentIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)} | `) + t.fg("accent", `↓${fmt(currentOut)}`) + ctxPctStr,
+            t.fg("muted", "t") + t.fg("accent", `${(pending as any).turnIndex + 1} ↑${fmt(currentIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)} | `) + t.fg("accent", `↓${fmt(currentOut)}`) + ctxPctStr,
             t.fg("muted", "Cum. ") + t.fg("accent", `∑↑${fmt(cum.totalIn + currentIn)} `) + t.fg("muted", `sys:${fmt(cum.base + e.base)} sk:${fmt(cum.skills + e.skills)} md:${fmt(cum.metadata + e.metadata)} tl:${fmt(cum.tools + e.tools)} hi:${fmt(cum.history + e.history)} tr:${fmt(cum.results + e.results)} in:${fmt(cum.input + e.input)} | `) + t.fg("accent", `∑↓${cum.totalOut > 0 ? fmt(cum.totalOut + currentOut) : fmt(currentOut)}`) + cumCacheStr + cumCostStr
           ],
           { placement: "belowEditor" }
@@ -594,11 +675,20 @@ export default function (pi: ExtensionAPI) {
       const p = ctxUsage.percent;
       const pColor = p > 90 ? "error" : p > 75 ? "warning" : "muted";
       ctxPctStr = t.fg("muted", " | ctx:") + t.fg(pColor, `${p.toFixed(0)}%`);
+      if (p >= 90 && lastCtxWarning < 90) {
+        lastCtxWarning = 90;
+        ctx.ui.notify(`Context at ${p.toFixed(0)}% — compaction imminent.`, "error");
+      } else if (p >= 80 && lastCtxWarning < 80) {
+        lastCtxWarning = 80;
+        ctx.ui.notify(`Context at ${p.toFixed(0)}% — approaching limit.`, "warning");
+      }
     }
-    
+
+    const hitStr      = fmtCacheHit(cr, actualInTotal);
+    const turnHitStr  = hitStr ? t.fg("muted", " | ") + t.fg("accent", `hit:${hitStr}`) : "";
     const turnCacheStr = (cr > 0 || cw > 0) ? t.fg("muted", " | ") + t.fg("accent", `cr:${fmt(cr)} cw:${fmt(cw)}`) : "";
     const cumCacheStr  = (cumCR > 0 || cumCW > 0) ? t.fg("muted", " | ") + t.fg("accent", `∑cr:${fmt(cumCR)} ∑cw:${fmt(cumCW)}`) : "";
-    
+
     const turnCostStr  = turnCost > 0 ? t.fg("muted", " | ") + t.fg("success", fmtCost(turnCost)) : "";
     const cumCostStr   = cumCost > 0 ? t.fg("muted", " | ") + t.fg("success", `∑${fmtCost(cumCost)}`) : "";
 
@@ -606,7 +696,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(
       "token-stats",
       [
-        t.fg("muted", "Turn ") + t.fg("accent", `${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnCacheStr + turnCostStr + ctxPctStr,
+        t.fg("muted", "t") + t.fg("accent", `${record.turnIndex + 1}/${turns.length} ${est}↑${fmt(displayIn)} `) + t.fg("muted", `sys:${fmt(e.base)} sk:${fmt(e.skills)} md:${fmt(e.metadata)} tl:${fmt(e.tools)} hi:${fmt(e.history)} tr:${fmt(e.results)} in:${fmt(e.input)}`) + (ao != null ? t.fg("muted", " | ") + t.fg("accent", `↓${fmt(ao)}`) : "") + turnHitStr + turnCacheStr + turnCostStr + ctxPctStr,
         t.fg("muted", "Cum. ") + t.fg("accent", `${est}∑↑${fmt(cum.totalIn)} `) + t.fg("muted", `sys:${fmt(cum.base)} sk:${fmt(cum.skills)} md:${fmt(cum.metadata)} tl:${fmt(cum.tools)} hi:${fmt(cum.history)} tr:${fmt(cum.results)} in:${fmt(cum.input)} | `) + t.fg("accent", `∑↓${fmt(cum.totalOut)}`) + cumCacheStr + cumCostStr
       ],
       { placement: "belowEditor" }
@@ -623,6 +713,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     turns.length = 0;
     cum = { base: 0, skills: 0, metadata: 0, tools: 0, history: 0, results: 0, input: 0, totalIn: 0, totalOut: 0, cacheR: 0, cacheW: 0, cost: 0 };
+    lastCtxWarning = 0;
     ctx.ui.setStatus("token-stats", undefined);
     ctx.ui.setWidget(
       "token-stats",
@@ -644,7 +735,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       await ctx.ui.custom<void>(
-        (tui, theme, _kb, done) => makeOverlay(turns, pi, tui, theme, done),
+        (tui, theme, _kb, done) => makeOverlay(turns, cum, pi, tui, theme, done),
         {
           overlay: true,
           overlayOptions: { anchor: "center", width: 90, maxHeight: 48 },
