@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "description": "Live per-turn token breakdown by category in footer + drill-down overlay",
   "license": "MIT",
-  "dependencies": {
-    "gpt-tokenizer": "^3.4.0"
-  },
   "pi": {
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
+    "@types/node": "^25.9.2",
+    "typescript": "^6.0.3"
   }
 }
